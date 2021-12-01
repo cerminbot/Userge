@@ -19,7 +19,6 @@ from traceback import format_exc
 from typing import List, Tuple
 
 import ffmpeg
-import youtube_dl as ytdl
 from pyrogram.raw import functions
 from pyrogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message as RawMessage
@@ -30,7 +29,7 @@ from pytgcalls.exceptions import GroupCallNotFoundError
 from youtubesearchpython import VideosSearch
 
 from userge import userge, Message, pool, filters, get_collection, Config
-from userge.utils import time_formatter
+from userge.utils import time_formatter, import_ytdl
 from userge.utils.exceptions import StopConversation
 
 CHANNEL = userge.getCLogger(__name__)
@@ -50,6 +49,7 @@ BACK_BUTTON_TEXT = ""
 CQ_MSG: List[RawMessage] = []
 
 call = GroupCall(userge, play_on_repeat=False)
+ytdl = import_ytdl()
 
 yt_regex = re.compile(
     r'(https?://)?(www\.)?'
@@ -112,13 +112,12 @@ def check_cq_for_all(func):
 def default_markup():
     """ default markup for playing text """
 
-    buttons = InlineKeyboardMarkup(
+    return InlineKeyboardMarkup(
         [[
             InlineKeyboardButton(text="⏩ Skip", callback_data="skip"),
             InlineKeyboardButton(text="🗒 Queue", callback_data="queue")
         ]]
     )
-    return buttons
 
 
 def volume_button_markup():
@@ -233,10 +232,7 @@ async def toggle_vc(msg: Message):
     global CMDS_FOR_ALL  # pylint: disable=global-statement
 
     await msg.delete()
-    if CMDS_FOR_ALL:
-        CMDS_FOR_ALL = False
-    else:
-        CMDS_FOR_ALL = True
+    CMDS_FOR_ALL = not CMDS_FOR_ALL
 
     await VC_DB.update_one(
         {'_id': 'VC_CMD_TOGGLE'},
@@ -269,7 +265,7 @@ async def play_music(msg: Message):
                 if PLAYING:
                     msg = await reply_text(msg, _get_scheduled_text(title, link))
                 else:
-                    msg = await msg.edit(f"[{title}]({link})")
+                    msg = await msg.edit(f"[{title}]({link})", disable_web_page_preview=True)
                 await mesg.delete()
                 QUEUE.append(msg)
             else:
@@ -314,16 +310,15 @@ async def _help(msg: Message):
                         f"    📚 <b>info:</b>  <i>{cmd.doc}</i>\n\n")
         await reply_text(msg, out_str, parse_mode="html")
 
-    else:
-        if msg.input_str.lstrip(Config.SUDO_TRIGGER) in raw_cmds:
-            key = msg.input_str.lstrip(Config.CMD_TRIGGER)
-            key_ = Config.CMD_TRIGGER + key
-            if key in commands:
-                out_str = f"<code>{key}</code>\n\n{commands[key].about}"
-                await reply_text(msg, out_str, parse_mode="html")
-            elif key_ in commands:
-                out_str = f"<code>{key_}</code>\n\n{commands[key_].about}"
-                await reply_text(msg, out_str, parse_mode="html")
+    elif msg.input_str.lstrip(Config.SUDO_TRIGGER) in raw_cmds:
+        key = msg.input_str.lstrip(Config.CMD_TRIGGER)
+        key_ = Config.CMD_TRIGGER + key
+        if key in commands:
+            out_str = f"<code>{key}</code>\n\n{commands[key].about}"
+            await reply_text(msg, out_str, parse_mode="html")
+        elif key_ in commands:
+            out_str = f"<code>{key_}</code>\n\n{commands[key_].about}"
+            await reply_text(msg, out_str, parse_mode="html")
 
 
 @userge.on_cmd("forceplay", about={
@@ -550,7 +545,7 @@ async def _skip(clear_queue: bool = False):
             await yt_down(msg)
     except Exception as err:
         PLAYING = False
-        out = f"**ERROR:** `{str(err)}`"
+        out = f'**ERROR:** `{err}`'
         await CHANNEL.log(f"`{format_exc().strip()}`")
         if QUEUE:
             out += "\n\n`Playing next Song.`"
@@ -593,8 +588,12 @@ async def yt_down(msg: Message):
     await message.delete()
 
     def requester():
+        if not msg.from_user:
+            return None
         replied = msg.reply_to_message
         if replied and msg.client.id == msg.from_user.id:
+            if not replied.from_user:
+                return None
             return replied.from_user.mention
         return msg.from_user.mention
 
@@ -657,9 +656,10 @@ def _get_yt_link(msg: Message) -> str:
 
 
 def _get_yt_info(msg: Message) -> Tuple[str, str]:
-    for e in msg.entities:
-        if e.url:
-            return msg.text[e.offset:e.length], e.url
+    if msg.entities:
+        for e in msg.entities:
+            if e.url:
+                return msg.text[e.offset:e.length], e.url
     return "Song", _get_yt_link(msg)
 
 
